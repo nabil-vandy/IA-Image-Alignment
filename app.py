@@ -27,9 +27,11 @@ if 'ref_nose_pos' not in st.session_state:
 
 # --- MEDIA PIPE SETUP ---
 mp_face_mesh = mp.solutions.face_mesh
+
+# FIX: Set refine_landmarks=False to prevent "Feedback manager" crash
 face_mesh = mp_face_mesh.FaceMesh(
     max_num_faces=1,
-    refine_landmarks=True,
+    refine_landmarks=False,  # <--- CRITICAL FIX
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
@@ -128,13 +130,12 @@ if st.session_state['ref_nose_pos'] is not None:
         {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
     )
 
-    # UPDATED: Audio disabled, Low Resolution forced
     webrtc_streamer(
         key="alignment", 
         video_processor_factory=VideoProcessor,
         rtc_configuration=rtc_configuration,
         media_stream_constraints={
-            "video": {"width": 480, "height": 360}, # Low Res = Fast Performance
-            "audio": False # Audio Disabled
+            "video": {"width": 480, "height": 360},
+            "audio": False
         }
     )
