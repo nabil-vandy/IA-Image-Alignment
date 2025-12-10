@@ -17,13 +17,14 @@ st.markdown("""
         display: none !important;
     }
     
-    /* 2. Style our custom 'Capture' button to look like a 'Stop' action but Green */
+    /* 2. Style our custom 'Capture' button */
     div.stButton > button:first-child[kind="primary"] {
         background-color: #28a745; /* Green */
         color: white;
         font-weight: bold;
-        padding-top: 10px;
-        padding-bottom: 10px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        font-size: 18px; /* Larger text for easy tapping */
     }
     </style>
 """, unsafe_allow_html=True)
@@ -158,14 +159,16 @@ class AlignmentProcessor(VideoProcessorBase):
 # --- APP START ---
 st.title("ImageAssist Mobile Demo")
 
-with st.expander("ℹ️ About & Instructions", expanded=False):
-    st.write("1. Upload a reference.")
-    st.write("2. Tap 'START CAMERA'.")
-    st.write("3. Align until GREEN.")
-    st.write("4. Tap 'STOP (CAPTURE)' to finish.")
-
 # --- STEP 1: UPLOAD PHASE ---
 if st.session_state['ref_data']['raw'] is None:
+    
+    # --- Instructions ONLY appear here ---
+    with st.expander("ℹ️ About & Instructions", expanded=False):
+        st.write("1. Upload a reference.")
+        st.write("2. Tap 'START CAMERA'.")
+        st.write("3. Align until GREEN.")
+        st.write("4. Tap 'STOP (CAPTURE)' to finish.")
+    
     st.header("Step 1: Upload Reference")
     uploaded_file = st.file_uploader("Select Reference Image", type=['jpg', 'png', 'jpeg'])
 
@@ -186,7 +189,7 @@ if st.session_state['ref_data']['raw'] is None:
                     lm = results.multi_face_landmarks[0].landmark
                     annotated_image = ref_img.copy()
                     
-                    # --- BOLDER MESH SETTINGS ---
+                    # Bolder Mesh
                     connection_spec = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=2, circle_radius=1) 
                     landmark_spec = mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2)   
                     
@@ -210,29 +213,23 @@ if st.session_state['ref_data']['raw'] is None:
 
 # --- STEP 2: LIVE ALIGNMENT PHASE ---
 elif not st.session_state['capture_done']:
-    st.header("Step 2: Alignment Guide")
+    # No Header here, just a tiny caption to explain the circle
     st.caption("Align your nose with the **Yellow Circle**.")
 
-    # UPDATED RTC CONFIG with Multiple STUN Servers
-    rtc_configuration = RTCConfiguration({
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},
-            {"urls": ["stun:stun1.l.google.com:19302"]},
-            {"urls": ["stun:stun2.l.google.com:19302"]},
-        ]
-    })
+    rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
     
+    # Square 720p for best balance
     ctx = webrtc_streamer(
         key="alignment-stream",
         video_processor_factory=AlignmentProcessor,
         rtc_configuration=rtc_configuration,
-        media_stream_constraints={"video": {"width": 480, "height": 480}, "audio": False},
+        media_stream_constraints={"video": {"width": 720, "height": 720}, "audio": False},
         translations={
             "start": "START CAMERA FOR ALIGNMENT",
         }
     )
 
-    # OUR CUSTOM "STOP (CAPTURE)" BUTTON
+    # CAPTURE BUTTON
     if st.button("📸 STOP (CAPTURE IMAGE)", type="primary", use_container_width=True):
         if ctx.state.playing and ctx.video_processor:
             clean = ctx.video_processor.clean_frame
@@ -243,11 +240,11 @@ elif not st.session_state['capture_done']:
                 st.session_state['capture_done'] = True
                 st.rerun()
         else:
-            st.warning("⚠️ Camera is not running. Click 'START' above first.")
+            st.warning("⚠️ Camera is not running.")
 
 # --- STEP 3: RESULT PHASE ---
 else:
-    st.header("Step 3: Process Report")
+    # No Header here either, just the result
     st.button("🔄 Start Over", on_click=reset_app, use_container_width=True)
 
     if st.session_state['ref_data']['raw'] is not None and st.session_state['final_captures']['clean'] is not None:
