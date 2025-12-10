@@ -216,7 +216,15 @@ elif not st.session_state['capture_done']:
     st.header("Step 2: Alignment Guide")
     st.caption("Align your nose with the **Yellow Circle**.")
 
-    rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+    # Expanded ICE servers to handle network firewalls better
+rtc_configuration = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+    ]
+})
+
     
     ctx = webrtc_streamer(
         key="alignment-stream",
