@@ -19,8 +19,7 @@ st.markdown("""
     
     /* 2. Style our custom 'Capture' button to look like a 'Stop' action but Green */
     div.stButton > button:first-child[kind="primary"] {
-        background-color: #d9534f; /* Red-ish for Stop/Action feel, or Green if preferred */
-        background-color: #28a745; /* Green per previous request */
+        background-color: #28a745; /* Green */
         color: white;
         font-weight: bold;
         padding-top: 10px;
@@ -188,9 +187,7 @@ if st.session_state['ref_data']['raw'] is None:
                     annotated_image = ref_img.copy()
                     
                     # --- BOLDER MESH SETTINGS ---
-                    # Cyan/Teal Connections
                     connection_spec = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=2, circle_radius=1) 
-                    # Blue Landmarks
                     landmark_spec = mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2)   
                     
                     mp_drawing.draw_landmarks(
@@ -216,15 +213,14 @@ elif not st.session_state['capture_done']:
     st.header("Step 2: Alignment Guide")
     st.caption("Align your nose with the **Yellow Circle**.")
 
-    # Expanded ICE servers to handle network firewalls better
-rtc_configuration = RTCConfiguration({
-    "iceServers": [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-    ]
-})
-
+    # UPDATED RTC CONFIG with Multiple STUN Servers
+    rtc_configuration = RTCConfiguration({
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun2.l.google.com:19302"]},
+        ]
+    })
     
     ctx = webrtc_streamer(
         key="alignment-stream",
@@ -237,7 +233,6 @@ rtc_configuration = RTCConfiguration({
     )
 
     # OUR CUSTOM "STOP (CAPTURE)" BUTTON
-    # This replaces the native stop button functionality safely
     if st.button("📸 STOP (CAPTURE IMAGE)", type="primary", use_container_width=True):
         if ctx.state.playing and ctx.video_processor:
             clean = ctx.video_processor.clean_frame
