@@ -227,7 +227,7 @@ if st.session_state['ref_data']['raw'] is None:
 
 # --- STEP 2: LIVE ALIGNMENT PHASE ---
 elif not st.session_state['capture_done']:
-    st.caption("Align nose with Yellow Circle.")
+
 
     rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
     
