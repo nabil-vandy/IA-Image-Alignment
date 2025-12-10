@@ -5,6 +5,7 @@ import mediapipe as mp
 import numpy as np
 import av
 import math
+import threading
 
 # Page Config
 st.set_page_config(page_title="ImageAssist AI Alignment", page_icon="📸")
@@ -12,20 +13,22 @@ st.set_page_config(page_title="ImageAssist AI Alignment", page_icon="📸")
 st.title("ImageAssist: Smart Alignment Proto")
 st.markdown("""
 **Instructions:**
-1. Upload a "Reference Photo" (the "Gold Standard").
-2. Allow camera access.
-3. The AI will guide you to match the reference angle and distance.
+1. Upload a "Reference Photo".
+2. Start the camera.
+3. Follow the text overlays (UP, DOWN, CLOSER, etc.).
+4. Click **"Take Photo"** when aligned.
 """)
 
-# --- GLOBAL VARIABLES FOR REFERENCE DATA ---
-if 'ref_landmarks' not in st.session_state:
-    st.session_state['ref_landmarks'] = None
-if 'ref_eye_dist' not in st.session_state:
-    st.session_state['ref_eye_dist'] = None
-if 'ref_nose_pos' not in st.session_state:
-    st.session_state['ref_nose_pos'] = None
+# --- GLOBAL VARIABLES (Thread-Safe Data Transfer) ---
+# We use a lock to ensure the background thread reads data safely
+lock = threading.Lock()
+ref_data = {
+    "nose": None,
+    "eye_dist": None,
+    "image": None
+}
 
-# --- HELPER FUNCTION ---
+# --- HELPER: DISTANCE CALC ---
 def calculate_distance(p1, p2):
     return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
 
@@ -33,39 +36,40 @@ def calculate_distance(p1, p2):
 uploaded_file = st.file_uploader("Upload Reference Photo (Face)", type=['jpg', 'png', 'jpeg'])
 
 if uploaded_file is not None:
-    # Use a temporary FaceMesh just for the reference photo
-    with mp.solutions.face_mesh.FaceMesh(
+    # Process reference only once
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    ref_img = cv2.imdecode(file_bytes, 1)
+    
+    # Run MediaPipe on Reference
+    mp_face_mesh = mp.solutions.face_mesh
+    with mp_face_mesh.FaceMesh(
         max_num_faces=1,
         refine_landmarks=False,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    ) as face_mesh_ref:
-        
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        ref_img = cv2.imdecode(file_bytes, 1)
-        
-        h, w, _ = ref_img.shape
-        ref_rgb = cv2.cvtColor(ref_img, cv2.COLOR_BGR2RGB)
-        results = face_mesh_ref.process(ref_rgb)
+        min_detection_confidence=0.5
+    ) as face_mesh:
+        rgb_ref = cv2.cvtColor(ref_img, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(rgb_ref)
         
         if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
+            lm = results.multi_face_landmarks[0].landmark
             
-            # Store Reference Data
-            st.session_state['ref_nose_pos'] = (landmarks[1].x, landmarks[1].y) 
-            left_eye = (landmarks[33].x, landmarks[33].y)
-            right_eye = (landmarks[263].x, landmarks[263].y)
-            st.session_state['ref_eye_dist'] = calculate_distance(left_eye, right_eye)
-            
-            st.success("✅ Reference Processed! Scroll down to start camera.")
-            st.image(ref_img, caption="Reference Photo", width=300)
+            # Update Global Reference Data safely
+            with lock:
+                ref_data["nose"] = (lm[1].x, lm[1].y)
+                # Eye distance (Index 33 to 263)
+                l_eye = (lm[33].x, lm[33].y)
+                r_eye = (lm[263].x, lm[263].y)
+                ref_data["eye_dist"] = calculate_distance(l_eye, r_eye)
+                ref_data["image"] = cv2.cvtColor(ref_img, cv2.COLOR_BGR2RGB) # Save for comparison
+                
+            st.success("✅ Reference Loaded! Scroll down to start.")
+            st.image(ref_data["image"], caption="Reference (Goal)", width=200)
         else:
-            st.error("❌ No face detected in reference photo. Try another.")
+            st.error("❌ No face found in reference.")
 
-# --- STEP 2: LIVE WEBRTC PROCESSOR (OPTIMIZED) ---
-class VideoProcessor(VideoProcessorBase):
+# --- STEP 2: VIDEO PROCESSOR CLASS ---
+class AlignmentProcessor(VideoProcessorBase):
     def __init__(self):
-        # Initialize MediaPipe INSIDE the class for thread safety
         self.mp_face_mesh = mp.solutions.face_mesh
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             max_num_faces=1,
@@ -73,97 +77,116 @@ class VideoProcessor(VideoProcessorBase):
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
-        # Variables for Frame Skipping
         self.frame_count = 0
-        self.skip_rate = 5 # Process only 1 out of every 5 frames
         self.last_instructions = []
-        self.last_color = (0, 255, 0)
-        
-        # Cache the reference data so we don't access Session State every frame
-        self.ref_nose = st.session_state.get('ref_nose_pos')
-        self.ref_dist = st.session_state.get('ref_eye_dist')
+        self.last_frame = None # Store the latest frame for capture
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         
-        # Mirror image immediately
+        # Mirror immediately
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
         
-        # --- FRAME SKIPPING LOGIC ---
-        self.frame_count += 1
+        # Keep a copy of the clean frame (or processed frame) for capturing
+        # We'll save the processed one so they see the overlay in the capture? 
+        # Usually better to save the clean one, but for demo let's save processed.
         
-        # Only run heavy AI inference if we are on the Nth frame
-        if self.frame_count % self.skip_rate == 0 and self.ref_nose is not None:
+        # Access Global Reference Data
+        with lock:
+            r_nose = ref_data["nose"]
+            r_dist = ref_data["eye_dist"]
+
+        # If reference exists, run logic
+        if r_nose is not None:
+            self.frame_count += 1
             
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            results = self.face_mesh.process(rgb_img)
-            
-            if results.multi_face_landmarks:
-                for face_landmarks in results.multi_face_landmarks:
-                    lm = face_landmarks.landmark
+            # Run AI every 3rd frame (balance speed/smoothness)
+            if self.frame_count % 3 == 0:
+                rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                results = self.face_mesh.process(rgb_img)
+                
+                self.last_instructions = [] # Reset
+                
+                if results.multi_face_landmarks:
+                    lm = results.multi_face_landmarks[0].landmark
                     
                     # Current Metrics
-                    curr_nose = (lm[1].x, lm[1].y)
-                    curr_left_eye = (lm[33].x, lm[33].y)
-                    curr_right_eye = (lm[263].x, lm[263].y)
-                    curr_dist = calculate_distance(curr_left_eye, curr_right_eye)
+                    c_nose = (lm[1].x, lm[1].y)
+                    c_l = (lm[33].x, lm[33].y)
+                    c_r = (lm[263].x, lm[263].y)
+                    c_dist = calculate_distance(c_l, c_r)
                     
-                    # Reset instructions for this new frame
-                    self.last_instructions = []
+                    # 1. Position Logic
+                    thr_pos = 0.05
+                    if c_nose[0] < r_nose[0] - thr_pos: self.last_instructions.append("MOVE RIGHT >>")
+                    elif c_nose[0] > r_nose[0] + thr_pos: self.last_instructions.append("<< MOVE LEFT")
                     
-                    # 1. Position Logic (X/Y)
-                    threshold_pos = 0.05 
-                    if curr_nose[0] < self.ref_nose[0] - threshold_pos:
-                        self.last_instructions.append("MOVE RIGHT >>")
-                    elif curr_nose[0] > self.ref_nose[0] + threshold_pos:
-                        self.last_instructions.append("<< MOVE LEFT")
+                    if c_nose[1] < r_nose[1] - thr_pos: self.last_instructions.append("MOVE DOWN v")
+                    elif c_nose[1] > r_nose[1] + thr_pos: self.last_instructions.append("MOVE UP ^")
                     
-                    if curr_nose[1] < self.ref_nose[1] - threshold_pos:
-                        self.last_instructions.append("MOVE DOWN v")
-                    elif curr_nose[1] > self.ref_nose[1] + threshold_pos:
-                        self.last_instructions.append("MOVE UP ^")
-                        
-                    # 2. Depth Logic (Z)
-                    threshold_depth = 0.02
-                    if curr_dist > self.ref_dist + threshold_depth:
-                        self.last_instructions.append("MOVE BACK (-)")
-                    elif curr_dist < self.ref_dist - threshold_depth:
-                        self.last_instructions.append("MOVE CLOSER (+)")
-                    
-                    # Set Color
-                    self.last_color = (0, 0, 255) if self.last_instructions else (0, 255, 0)
+                    # 2. Depth Logic
+                    thr_depth = 0.02
+                    if c_dist > r_dist + thr_depth: self.last_instructions.append("MOVE BACK (-)")
+                    elif c_dist < r_dist - thr_depth: self.last_instructions.append("MOVE CLOSER (+)")
 
-        # --- DRAWING (Happens on EVERY frame using cached data) ---
-        if self.ref_nose is not None:
-            # Draw Ghost Target
-            target_x = int(self.ref_nose[0] * w)
-            target_y = int(self.ref_nose[1] * h)
-            cv2.circle(img, (target_x, target_y), 10, (255, 255, 0), 2)
-
-            # Draw Instructions (Cached)
+            # Draw Instructions (Persistent)
             if not self.last_instructions:
-                cv2.putText(img, "PERFECT!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 3)
+                cv2.putText(img, "PERFECT SHOT!", (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+                # Draw green box
+                cv2.rectangle(img, (20, 20), (w-20, h-20), (0, 255, 0), 5)
             else:
                 for i, text in enumerate(self.last_instructions):
-                    cv2.putText(img, text, (50, 100 + (i*60)), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                    cv2.putText(img, text, (30, 80 + (i*50)), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
+            # Draw Ghost Target
+            t_x, t_y = int(r_nose[0] * w), int(r_nose[1] * h)
+            cv2.circle(img, (t_x, t_y), 8, (255, 255, 0), 2)
+            
+        # Update latest frame
+        self.last_frame = img
         
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- START STREAM ---
-if st.session_state['ref_nose_pos'] is not None:
-    st.write("### 🎥 Live Alignment Guide")
+# --- STEP 3: STREAMER & UI ---
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.write("### 🎥 Live Guide")
+    # Define RTC Config
+    rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
     
-    rtc_configuration = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    # We create the streamer context
+    ctx = webrtc_streamer(
+        key="alignment-stream",
+        video_processor_factory=AlignmentProcessor,
+        rtc_configuration=rtc_configuration,
+        media_stream_constraints={"video": {"width": 480}, "audio": False}
     )
 
-    webrtc_streamer(
-        key="alignment", 
-        video_processor_factory=VideoProcessor,
-        rtc_configuration=rtc_configuration,
-        media_stream_constraints={
-            "video": {"width": 480, "height": 360}, # Keep low res for speed
-            "audio": False
-        }
-    )
+with col2:
+    st.write("### Controls")
+    # The Capture Button
+    if st.button("📸 Take Photo"):
+        if ctx.video_processor:
+            # Grab the latest frame from the processor
+            if ctx.video_processor.last_frame is not None:
+                st.session_state['captured_img'] = ctx.video_processor.last_frame
+                st.success("Photo Captured!")
+            else:
+                st.warning("Camera not ready yet.")
+
+# --- STEP 4: RESULT COMPARISON ---
+if 'captured_img' in st.session_state and ref_data["image"] is not None:
+    st.write("---")
+    st.subheader("📊 Comparison Result")
+    
+    # Prepare images for display
+    # Captured image is BGR (from OpenCV), convert to RGB
+    cap_rgb = cv2.cvtColor(st.session_state['captured_img'], cv2.COLOR_BGR2RGB)
+    
+    res_col1, res_col2 = st.columns(2)
+    with res_col1:
+        st.image(ref_data["image"], caption="Original Reference", use_container_width=True)
+    with res_col2:
+        st.image(cap_rgb, caption="Your New Aligned Photo", use_container_width=True)
