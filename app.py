@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -9,31 +9,22 @@ import math
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="ImageAssist Proto", page_icon="📸", layout="centered")
 
-# --- CSS TWEAKS ---
-# We use CSS to rename the 'Stop' button to 'Capture' visually
+# --- CSS: HIDE NATIVE STOP BUTTON & STYLE MINE ---
 st.markdown("""
     <style>
-    /* Target the secondary (Stop) button inside the Streamer component */
+    /* 1. HIDE the native 'Stop' button inside the streamer */
     div[data-testid="stWebcStreamer"] button[kind="secondary"] {
-        background-color: #28a745 !important; /* Force Green */
-        color: white !important;
-        border: none !important;
-        font-weight: bold !important;
+        display: none !important;
     }
-    /* Use a pseudo-element to replace the text */
-    div[data-testid="stWebcStreamer"] button[kind="secondary"]::after {
-        content: "📸 CAPTURE & FINISH"; /* New Button Text */
-        visibility: visible;
-        display: block;
-        position: absolute;
-        background-color: #28a745;
-        padding: 5px 10px;
-        top: 0; left: 0; right: 0; bottom: 0;
-        display: flex; align-items: center; justify-content: center;
-    }
-    /* Hide original text */
-    div[data-testid="stWebcStreamer"] button[kind="secondary"] > div {
-        visibility: hidden;
+    
+    /* 2. Style our custom 'Capture' button to look like a 'Stop' action but Green */
+    div.stButton > button:first-child[kind="primary"] {
+        background-color: #d9534f; /* Red-ish for Stop/Action feel, or Green if preferred */
+        background-color: #28a745; /* Green per previous request */
+        color: white;
+        font-weight: bold;
+        padding-top: 10px;
+        padding-bottom: 10px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -77,6 +68,7 @@ def center_crop_and_resize(img, target_w, target_h):
 
 def create_collage(img1, img2, img3, img4):
     h_target, w_target = img4.shape[:2]
+    # Crop all inputs to match the camera aspect ratio
     i1 = center_crop_and_resize(img1, w_target, h_target) 
     i2 = center_crop_and_resize(img2, w_target, h_target)
     i3 = center_crop_and_resize(img3, w_target, h_target)
@@ -84,9 +76,10 @@ def create_collage(img1, img2, img3, img4):
 
     def add_label(img, text):
         overlay = img.copy()
-        cv2.rectangle(overlay, (0,0), (w_target, 50), (0,0,0), -1)
+        # Dark bar for text legibility
+        cv2.rectangle(overlay, (0,0), (w_target, 60), (0,0,0), -1)
         cv2.addWeighted(overlay, 0.5, img, 0.5, 0, img)
-        cv2.putText(img, text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(img, text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
         return img
 
     i1 = add_label(i1, "1. Reference")
@@ -170,7 +163,7 @@ with st.expander("ℹ️ About & Instructions", expanded=False):
     st.write("1. Upload a reference.")
     st.write("2. Tap 'START CAMERA'.")
     st.write("3. Align until GREEN.")
-    st.write("4. Tap 'CAPTURE & FINISH' to save.")
+    st.write("4. Tap 'STOP (CAPTURE)' to finish.")
 
 # --- STEP 1: UPLOAD PHASE ---
 if st.session_state['ref_data']['raw'] is None:
@@ -192,14 +185,13 @@ if st.session_state['ref_data']['raw'] is None:
                 
                 if results.multi_face_landmarks:
                     lm = results.multi_face_landmarks[0].landmark
-                    
                     annotated_image = ref_img.copy()
                     
-                    # PROMINENT BLUE MESH STYLES
-                    # Landmarks: Thick Blue Circles
-                    landmark_spec = mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=3) 
-                    # Connections: Thicker Teal Lines
-                    connection_spec = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=2, circle_radius=1)
+                    # --- BOLDER MESH SETTINGS ---
+                    # Cyan/Teal Connections
+                    connection_spec = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=2, circle_radius=1) 
+                    # Blue Landmarks
+                    landmark_spec = mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=2)   
                     
                     mp_drawing.draw_landmarks(
                         image=annotated_image,
@@ -226,8 +218,6 @@ elif not st.session_state['capture_done']:
 
     rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
     
-    # 1. SQUARE VIDEO CONSTRAINT (Fixes iPhone layout)
-    # 2. CUSTOM TRANSLATIONS (Renames Start/Stop)
     ctx = webrtc_streamer(
         key="alignment-stream",
         video_processor_factory=AlignmentProcessor,
@@ -235,26 +225,22 @@ elif not st.session_state['capture_done']:
         media_stream_constraints={"video": {"width": 480, "height": 480}, "audio": False},
         translations={
             "start": "START CAMERA FOR ALIGNMENT",
-            "stop": "STOP (Camera Active)", 
         }
     )
 
-    # THE "STOP-TO-CAPTURE" HACK
-    # We check if the stream state changed from "playing" to "stopped"
-    if ctx.state.playing:
-        st.session_state['was_playing'] = True
-    elif not ctx.state.playing and st.session_state.get('was_playing', False):
-        # The user clicked "Stop" (now labeled "Capture & Finish")
-        # Capture the last known frames
-        if ctx.video_processor:
+    # OUR CUSTOM "STOP (CAPTURE)" BUTTON
+    # This replaces the native stop button functionality safely
+    if st.button("📸 STOP (CAPTURE IMAGE)", type="primary", use_container_width=True):
+        if ctx.state.playing and ctx.video_processor:
             clean = ctx.video_processor.clean_frame
             overlay = ctx.video_processor.processed_frame
             if clean is not None and overlay is not None:
                 st.session_state['final_captures']['clean'] = clean
                 st.session_state['final_captures']['overlay'] = overlay
                 st.session_state['capture_done'] = True
-                st.session_state['was_playing'] = False # Reset flag
                 st.rerun()
+        else:
+            st.warning("⚠️ Camera is not running. Click 'START' above first.")
 
 # --- STEP 3: RESULT PHASE ---
 else:
@@ -266,7 +252,9 @@ else:
         img2 = st.session_state['ref_data']['mesh']
         img3 = st.session_state['final_captures']['overlay']
         img4 = st.session_state['final_captures']['clean']
+        
         collage = create_collage(img1, img2, img3, img4)
         collage_rgb = cv2.cvtColor(collage, cv2.COLOR_BGR2RGB)
+        
         st.image(collage_rgb, caption="Standardization Report", use_container_width=True)
         st.success("✅ Audit Trail Generated")
