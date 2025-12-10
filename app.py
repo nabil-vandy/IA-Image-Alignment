@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -10,29 +10,30 @@ import math
 st.set_page_config(page_title="ImageAssist Proto", page_icon="📸", layout="centered")
 
 # --- CSS TWEAKS ---
-# 1. Turn Primary Button GREEN
-# 2. HIDE the "Stop" button (which usually appears after starting) to prevent confusion
+# We use CSS to rename the 'Stop' button to 'Capture' visually
 st.markdown("""
     <style>
-    /* Green Primary Button */
-    div.stButton > button:first-child[kind="primary"] {
-        background-color: #28a745;
-        border-color: #28a745;
-        color: white;
-    }
-    div.stButton > button:first-child[kind="primary"]:hover {
-        background-color: #218838;
-        border-color: #1e7e34;
-    }
-    
-    /* Hide the 'Stop' button by targeting its specific translation text or state if possible.
-       Since we can't easily target text in CSS, we make the 'Stop' button look like a disabled status label */
+    /* Target the secondary (Stop) button inside the Streamer component */
     div[data-testid="stWebcStreamer"] button[kind="secondary"] {
-        /* This targets the Stop button once the stream is running */
-        background-color: #f0f2f6;
-        color: #31333F;
-        border: none;
-        cursor: default;
+        background-color: #28a745 !important; /* Force Green */
+        color: white !important;
+        border: none !important;
+        font-weight: bold !important;
+    }
+    /* Use a pseudo-element to replace the text */
+    div[data-testid="stWebcStreamer"] button[kind="secondary"]::after {
+        content: "📸 CAPTURE & FINISH"; /* New Button Text */
+        visibility: visible;
+        display: block;
+        position: absolute;
+        background-color: #28a745;
+        padding: 5px 10px;
+        top: 0; left: 0; right: 0; bottom: 0;
+        display: flex; align-items: center; justify-content: center;
+    }
+    /* Hide original text */
+    div[data-testid="stWebcStreamer"] button[kind="secondary"] > div {
+        visibility: hidden;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -167,8 +168,9 @@ st.title("ImageAssist Mobile Demo")
 
 with st.expander("ℹ️ About & Instructions", expanded=False):
     st.write("1. Upload a reference.")
-    st.write("2. Align nose to yellow target.")
-    st.write("3. Tap Capture when GREEN.")
+    st.write("2. Tap 'START CAMERA'.")
+    st.write("3. Align until GREEN.")
+    st.write("4. Tap 'CAPTURE & FINISH' to save.")
 
 # --- STEP 1: UPLOAD PHASE ---
 if st.session_state['ref_data']['raw'] is None:
@@ -190,10 +192,14 @@ if st.session_state['ref_data']['raw'] is None:
                 
                 if results.multi_face_landmarks:
                     lm = results.multi_face_landmarks[0].landmark
+                    
                     annotated_image = ref_img.copy()
                     
-                    connection_spec = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=1, circle_radius=1) 
-                    landmark_spec = mp_drawing.DrawingSpec(color=(0, 255, 255), thickness=1, circle_radius=1)   
+                    # PROMINENT BLUE MESH STYLES
+                    # Landmarks: Thick Blue Circles
+                    landmark_spec = mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2, circle_radius=3) 
+                    # Connections: Thicker Teal Lines
+                    connection_spec = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=2, circle_radius=1)
                     
                     mp_drawing.draw_landmarks(
                         image=annotated_image,
@@ -220,30 +226,35 @@ elif not st.session_state['capture_done']:
 
     rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
     
-    # CUSTOM TRANSLATIONS for Buttons
+    # 1. SQUARE VIDEO CONSTRAINT (Fixes iPhone layout)
+    # 2. CUSTOM TRANSLATIONS (Renames Start/Stop)
     ctx = webrtc_streamer(
         key="alignment-stream",
         video_processor_factory=AlignmentProcessor,
         rtc_configuration=rtc_configuration,
-        media_stream_constraints={"video": {"width": 1280, "height": 720}, "audio": False},
+        media_stream_constraints={"video": {"width": 480, "height": 480}, "audio": False},
         translations={
             "start": "START CAMERA FOR ALIGNMENT",
-            "stop": "CAMERA ACTIVE (Rec)", 
-            "select_device": "Select Webcam"
+            "stop": "STOP (Camera Active)", 
         }
     )
 
-    if st.button("📸 TAP HERE TO CAPTURE", type="primary", use_container_width=True):
-        if ctx.state.playing and ctx.video_processor:
+    # THE "STOP-TO-CAPTURE" HACK
+    # We check if the stream state changed from "playing" to "stopped"
+    if ctx.state.playing:
+        st.session_state['was_playing'] = True
+    elif not ctx.state.playing and st.session_state.get('was_playing', False):
+        # The user clicked "Stop" (now labeled "Capture & Finish")
+        # Capture the last known frames
+        if ctx.video_processor:
             clean = ctx.video_processor.clean_frame
             overlay = ctx.video_processor.processed_frame
             if clean is not None and overlay is not None:
                 st.session_state['final_captures']['clean'] = clean
                 st.session_state['final_captures']['overlay'] = overlay
                 st.session_state['capture_done'] = True
+                st.session_state['was_playing'] = False # Reset flag
                 st.rerun()
-        else:
-            st.warning("⚠️ Waiting for camera stream...")
 
 # --- STEP 3: RESULT PHASE ---
 else:
